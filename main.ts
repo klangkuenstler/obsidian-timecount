@@ -1,134 +1,394 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, Notice, TFile } from 'obsidian';
 
-// Remember to rename these classes and interfaces!
-
-interface MyPluginSettings {
-	mySetting: string;
+interface TimecountSettings {
+    storageLocation: string;
+    trackingEnabled: boolean;
+    showNotifications: boolean;
+    sessionTimeout: number; // minutes of inactivity before ending session
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+interface TimeSession {
+    date: string;
+    startTime: number;
+    endTime: number;
+    duration: number; // in milliseconds
+    activeFile?: string;
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+interface DailyTimeData {
+    date: string;
+    totalTime: number;
+    sessions: TimeSession[];
+}
 
-	async onload() {
-		await this.loadSettings();
+const DEFAULT_SETTINGS: TimecountSettings = {
+    storageLocation: 'timecount-data.json',
+    trackingEnabled: true,
+    showNotifications: true,
+    sessionTimeout: 5
+};
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
+export default class TimecountPlugin extends Plugin {
+    settings: TimecountSettings;
+    private currentSession: TimeSession | null = null;
+    private lastActivity: number = 0;
+    private activityCheckInterval: NodeJS.Timeout | null = null;
+    private timeData: DailyTimeData[] = [];
+	private statusBarItem: HTMLElement | null = null;
+	private statusBarUpdateInterval: NodeJS.Timeout | null = null;
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
+    async onload() {
+        await this.loadSettings();
+        await this.loadTimeData();
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+        // Add ribbon icon
+        this.addRibbonIcon('clock', 'Timecount', (evt: MouseEvent) => {
+            this.showTimeStats();
+        });
+		
+		// Add status bar info
+		this.statusBarUpdateInterval = setInterval(() => {
+			this.updateStatusBar();
+		}, 1000); // Update every second
+		this.statusBarItem = this.addStatusBarItem();
+		this.statusBarItem.setText('0h 0min');
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
-		});
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+        // Add commands
+        this.addCommand({
+            id: 'start-timecount',
+            name: 'Start Timecount',
+            callback: () => this.startTracking()
+        });
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
+        this.addCommand({
+            id: 'stop-timecount',
+            name: 'Stop Timecount',
+            callback: () => this.stopTracking()
+        });
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+        this.addCommand({
+            id: 'show-timecount-stats',
+            name: 'Show Timecount statistics',
+            callback: () => this.showTimeStats()
+        });
+
+        // Add settings tab
+        this.addSettingTab(new TimecountSettingTab(this.app, this));
+
+        // Set up activity tracking
+        this.setupActivityTracking();
+
+        // Start tracking if enabled
+        if (this.settings.trackingEnabled) {
+            this.startTracking();
+        }
+    }
+
+    onunload() {
+        this.stopTracking();
+        if (this.activityCheckInterval) {
+            clearInterval(this.activityCheckInterval);
+        }
+
+		if (this.statusBarUpdateInterval) {
+			clearInterval(this.statusBarUpdateInterval);
+		}
+    }
+
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
+
+    private async loadTimeData() {
+        try {
+            const file = this.app.vault.getAbstractFileByPath(this.settings.storageLocation);
+            if (file instanceof TFile) {
+                const content = await this.app.vault.read(file);
+                this.timeData = JSON.parse(content);
+            }
+        } catch (error) {
+            console.log('No existing time data found or error loading:', error);
+            this.timeData = [];
+        }
+
+		this.updateStatusBar();
+    }
+
+    private async saveTimeData() {
+        try {
+            const content = JSON.stringify(this.timeData, null, 2);
+            const file = this.app.vault.getAbstractFileByPath(this.settings.storageLocation);
+            
+            if (file instanceof TFile) {
+                await this.app.vault.modify(file, content);
+            } else {
+                await this.app.vault.create(this.settings.storageLocation, content);
+            }
+        } catch (error) {
+            console.error('Error saving time data:', error);
+        }
+    }
+
+    private setupActivityTracking() {
+        // Track various user activities
+        const trackActivity = () => {
+            this.lastActivity = Date.now();
+        };
+
+        // Listen for file changes, clicks, key presses
+        this.registerDomEvent(document, 'click', trackActivity);
+        this.registerDomEvent(document, 'keydown', trackActivity);
+        this.registerDomEvent(window, 'focus', trackActivity);
+
+        // Check for inactivity every 30 seconds
+        this.activityCheckInterval = setInterval(() => {
+            this.checkInactivity();
+        }, 30000);
+    }
+
+    private checkInactivity() {
+        if (!this.currentSession) return;
+
+        const inactiveTime = Date.now() - this.lastActivity;
+        const timeoutMs = this.settings.sessionTimeout * 60 * 1000;
+
+        if (inactiveTime > timeoutMs) {
+            this.endCurrentSession();
+            if (this.settings.showNotifications) {
+                new Notice('Timecount paused due to inactivity');
+            }
+        }
+    }
+
+    private startTracking() {
+        if (this.currentSession) {
+            return; // Already tracking
+        }
+
+        const now = Date.now();
+        const activeFile = this.app.workspace.getActiveFile();
+
+        this.currentSession = {
+            date: new Date().toISOString().split('T')[0],
+            startTime: now,
+            endTime: now,
+            duration: 0,
+            activeFile: activeFile?.path
+        };
+
+        this.lastActivity = now;
+
+        if (this.settings.showNotifications) {
+            new Notice('Timecount started');
+        }
+
+		this.updateStatusBar();
+    }
+
+    private stopTracking() {
+        if (!this.currentSession) return;
+
+        this.endCurrentSession();
+
+        if (this.settings.showNotifications) {
+            new Notice('Timecount stopped');
+        }
+    }
+
+    private endCurrentSession() {
+        if (!this.currentSession) return;
+
+        const now = Date.now();
+        this.currentSession.endTime = now;
+        this.currentSession.duration = now - this.currentSession.startTime;
+
+        // Find or create daily data entry
+        const today = this.currentSession.date;
+        let dailyData = this.timeData.find(d => d.date === today);
+
+        if (!dailyData) {
+            dailyData = {
+                date: today,
+                totalTime: 0,
+                sessions: []
+            };
+            this.timeData.push(dailyData);
+        }
+
+        // Add session to daily data
+        dailyData.sessions.push({ ...this.currentSession });
+        dailyData.totalTime += this.currentSession.duration;
+
+		this.updateStatusBar();
+
+        // Save data
+        this.saveTimeData();
+
+        // Clear current session
+        this.currentSession = null;
+    }
+
+    private showTimeStats() {
+        const today = new Date().toISOString().split('T')[0];
+        const todayData = this.timeData.find(d => d.date === today);
+        
+        let message = `Timecount Statistics\n\n`;
+        
+        if (todayData) {
+            const hours = Math.floor(todayData.totalTime / (1000 * 60 * 60));
+            const minutes = Math.floor((todayData.totalTime % (1000 * 60 * 60)) / (1000 * 60));
+            message += `Today: ${hours}h ${minutes}m\n`;
+            message += `Sessions: ${todayData.sessions.length}\n\n`;
+        } else {
+            message += `Today: No time tracked yet\n\n`;
+        }
+
+        // Show last 7 days
+        const last7Days = this.timeData
+            .filter(d => {
+                const date = new Date(d.date);
+                const weekAgo = new Date();
+                weekAgo.setDate(weekAgo.getDate() - 7);
+                return date >= weekAgo;
+            })
+            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+            .slice(0, 7);
+
+        if (last7Days.length > 0) {
+            message += `Last 7 days:\n`;
+            last7Days.forEach(day => {
+                const hours = Math.floor(day.totalTime / (1000 * 60 * 60));
+                const minutes = Math.floor((day.totalTime % (1000 * 60 * 60)) / (1000 * 60));
+                message += `${day.date}: ${hours}h ${minutes}m\n`;
+            });
+        }
+
+        if (this.currentSession) {
+            const currentDuration = Date.now() - this.currentSession.startTime;
+            const currentHours = Math.floor(currentDuration / (1000 * 60 * 60));
+            const currentMinutes = Math.floor((currentDuration % (1000 * 60 * 60)) / (1000 * 60));
+            message += `\nCurrent session: ${currentHours}h ${currentMinutes}m`;
+        }
+
+        new Notice(message, 8000);
+    }
+
+	private calculateTotalTime(): number {
+		// Sum all completed sessions
+		let totalTime = this.timeData.reduce((sum, day) => + day.totalTime, 0);
+
+		// Add current session time if active
+		if (this.currentSession) {
+			totalTime += Date.now() - this.currentSession.startTime;
+		}
+
+		return totalTime;
+	}
+	
+	// Method to format milliseconds
+	private formatTime(milliseconds: number): string {
+		const hours = Math.floor(milliseconds / (1000 * 60 * 60));
+		const minutes = Math.floor((milliseconds % (1000 * 60 * 60)) / (1000 * 60));
+		return `${hours}h ${minutes}m`;
 	}
 
-	onunload() {
+	private updateStatusBar(): void {
+		if (!this.statusBarItem) return;
 
-	}
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
+		const totalTime = this.calculateTotalTime();
+		this.statusBarItem.setText(this.formatTime(totalTime));
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+class TimecountSettingTab extends PluginSettingTab {
+    plugin: TimecountPlugin;
 
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
+    constructor(app: App, plugin: TimecountPlugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
+    display(): void {
+        const { containerEl } = this;
+        containerEl.empty();
 
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+        containerEl.createEl('h2', { text: 'Timecount Settings' });
 
-	constructor(app: App, plugin: MyPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
+        new Setting(containerEl)
+            .setName('Enable Timecount')
+            .setDesc('Automatically track time spent in Obsidian')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.trackingEnabled)
+                .onChange(async (value) => {
+                    this.plugin.settings.trackingEnabled = value;
+                    await this.plugin.saveSettings();
+                    
+                    if (value) {
+                        this.plugin.startTracking();
+                    } else {
+                        this.plugin.stopTracking();
+                    }
+                }));
 
-	display(): void {
-		const {containerEl} = this;
+        new Setting(containerEl)
+            .setName('Show notifications')
+            .setDesc('Show notifications when tracking starts/stops')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.showNotifications)
+                .onChange(async (value) => {
+                    this.plugin.settings.showNotifications = value;
+                    await this.plugin.saveSettings();
+                }));
 
-		containerEl.empty();
+        new Setting(containerEl)
+            .setName('Session timeout (minutes)')
+            .setDesc('Minutes of inactivity before ending the current session')
+            .addSlider(slider => slider
+                .setLimits(1, 30, 1)
+                .setValue(this.plugin.settings.sessionTimeout)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.sessionTimeout = value;
+                    await this.plugin.saveSettings();
+                }));
 
-		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
-	}
+        new Setting(containerEl)
+            .setName('Storage location')
+            .setDesc('File path where Timecount data will be stored')
+            .addText(text => text
+                .setPlaceholder('timecount-data.json')
+                .setValue(this.plugin.settings.storageLocation)
+                .onChange(async (value) => {
+                    this.plugin.settings.storageLocation = value || 'timecount-data.json';
+                    await this.plugin.saveSettings();
+                }));
+
+        // Add export button
+        new Setting(containerEl)
+            .setName('Export data')
+            .setDesc('Export Timecount data as JSON')
+            .addButton(button => button
+                .setButtonText('Export')
+                .onClick(async () => {
+                    try {
+                        const data = JSON.stringify(this.plugin.timeData, null, 2);
+                        const blob = new Blob([data], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'timecount-data.json';
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        new Notice('Timecount data exported successfully');
+                    } catch (error) {
+                        new Notice('Error exporting data');
+                        console.error(error);
+                    }
+                }));
+    }
 }

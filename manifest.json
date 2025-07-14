@@ -3,7 +3,7 @@
 	"name": "Timecount",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "Timecount is a plugin that logs the time you've spent in Obsidian.",
+	"description": "Track and log time spent in Obsidian with detailed session analytics",
 	"author": "Marcos Ribeiro",
 	"authorUrl": "https://github.com/klangkuenstler",
 	"isDesktopOnly": false
