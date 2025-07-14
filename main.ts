@@ -51,8 +51,7 @@ export default class TimecountPlugin extends Plugin {
 			this.updateStatusBar();
 		}, 1000); // Update every second
 		this.statusBarItem = this.addStatusBarItem();
-		this.statusBarItem.setText('0h 0min');
-
+		this.statusBarItem.setText('0h 0m');
 
         // Add commands
         this.addCommand({
@@ -71,6 +70,12 @@ export default class TimecountPlugin extends Plugin {
             id: 'show-timecount-stats',
             name: 'Show Timecount statistics',
             callback: () => this.showTimeStats()
+        });
+
+        this.addCommand({
+            id: 'reset-timecount-data',
+            name: 'Reset Timecount data',
+            callback: () => this.resetTimeData()
         });
 
         // Add settings tab
@@ -237,16 +242,32 @@ export default class TimecountPlugin extends Plugin {
         const today = new Date().toISOString().split('T')[0];
         const todayData = this.timeData.find(d => d.date === today);
         
-        let message = `Timecount Statistics\n\n`;
+        let message = `📊 Timecount Statistics\n\n`;
+        
+        // Today's stats
+        let todayTotal = 0;
+        if (todayData) {
+            todayTotal = todayData.totalTime;
+        }
+        
+        // Add current session time if active
+        if (this.currentSession) {
+            todayTotal += Date.now() - this.currentSession.startTime;
+        }
+        
+        const todayHours = Math.floor(todayTotal / (1000 * 60 * 60));
+        const todayMinutes = Math.floor((todayTotal % (1000 * 60 * 60)) / (1000 * 60));
+        message += `📅 Today: ${todayHours}h ${todayMinutes}m\n`;
         
         if (todayData) {
-            const hours = Math.floor(todayData.totalTime / (1000 * 60 * 60));
-            const minutes = Math.floor((todayData.totalTime % (1000 * 60 * 60)) / (1000 * 60));
-            message += `Today: ${hours}h ${minutes}m\n`;
-            message += `Sessions: ${todayData.sessions.length}\n\n`;
-        } else {
-            message += `Today: No time tracked yet\n\n`;
+            message += `🔄 Sessions: ${todayData.sessions.length}\n`;
         }
+        
+        // All time total
+        const allTimeTotal = this.calculateAllTimeTotal();
+        const allTimeHours = Math.floor(allTimeTotal / (1000 * 60 * 60));
+        const allTimeMinutes = Math.floor((allTimeTotal % (1000 * 60 * 60)) / (1000 * 60));
+        message += `⏰ All Time: ${allTimeHours}h ${allTimeMinutes}m\n\n`;
 
         // Show last 7 days
         const last7Days = this.timeData
@@ -260,7 +281,7 @@ export default class TimecountPlugin extends Plugin {
             .slice(0, 7);
 
         if (last7Days.length > 0) {
-            message += `Last 7 days:\n`;
+            message += `📈 Last 7 days:\n`;
             last7Days.forEach(day => {
                 const hours = Math.floor(day.totalTime / (1000 * 60 * 60));
                 const minutes = Math.floor((day.totalTime % (1000 * 60 * 60)) / (1000 * 60));
@@ -272,23 +293,40 @@ export default class TimecountPlugin extends Plugin {
             const currentDuration = Date.now() - this.currentSession.startTime;
             const currentHours = Math.floor(currentDuration / (1000 * 60 * 60));
             const currentMinutes = Math.floor((currentDuration % (1000 * 60 * 60)) / (1000 * 60));
-            message += `\nCurrent session: ${currentHours}h ${currentMinutes}m`;
+            message += `\n⏱️ Current session: ${currentHours}h ${currentMinutes}m`;
         }
 
-        new Notice(message, 8000);
+        new Notice(message, 10000);
     }
 
-	private calculateTotalTime(): number {
-		// Sum all completed sessions
-		let totalTime = this.timeData.reduce((sum, day) => + day.totalTime, 0);
+    private calculateAllTimeTotal(): number {
+        // Sum all completed sessions from all days
+        let totalTime = this.timeData.reduce((sum, day) => sum + day.totalTime, 0);
 
-		// Add current session time if active
-		if (this.currentSession) {
-			totalTime += Date.now() - this.currentSession.startTime;
-		}
+        // Add current session time if active
+        if (this.currentSession) {
+            totalTime += Date.now() - this.currentSession.startTime;
+        }
 
-		return totalTime;
-	}
+        return totalTime;
+    }
+
+    private calculateTodayTotal(): number {
+        const today = new Date().toISOString().split('T')[0];
+        const todayData = this.timeData.find(d => d.date === today);
+        
+        let todayTotal = 0;
+        if (todayData) {
+            todayTotal = todayData.totalTime;
+        }
+        
+        // Add current session time if active
+        if (this.currentSession) {
+            todayTotal += Date.now() - this.currentSession.startTime;
+        }
+        
+        return todayTotal;
+    }
 	
 	// Method to format milliseconds
 	private formatTime(milliseconds: number): string {
@@ -300,10 +338,80 @@ export default class TimecountPlugin extends Plugin {
 	private updateStatusBar(): void {
 		if (!this.statusBarItem) return;
 
-		const totalTime = this.calculateTotalTime();
-		this.statusBarItem.setText(this.formatTime(totalTime));
+		const allTimeTotal = this.calculateAllTimeTotal();
+		const todayTotal = this.calculateTodayTotal();
+		
+		// Show all time total with today's time in parentheses
+		const allTimeFormatted = this.formatTime(allTimeTotal);
+		const todayFormatted = this.formatTime(todayTotal);
+		
+		this.statusBarItem.setText(`⏰ ${allTimeFormatted} (${todayFormatted})`);
+		this.statusBarItem.title = `All time: ${allTimeFormatted}\nToday: ${todayFormatted}`;
 	}
+
+    private async resetTimeData() {
+        const confirmReset = await this.showConfirmDialog(
+            'Reset Timecount Data',
+            'Are you sure you want to reset all time tracking data? This action cannot be undone.'
+        );
+
+        if (confirmReset) {
+            this.timeData = [];
+            this.currentSession = null;
+            await this.saveTimeData();
+            this.updateStatusBar();
+            new Notice('Timecount data has been reset');
+        }
+    }
+
+    private showConfirmDialog(title: string, message: string): Promise<boolean> {
+        return new Promise((resolve) => {
+            const modal = new ConfirmModal(this.app, title, message, resolve);
+            modal.open();
+        });
+    }
 }
+
+class ConfirmModal extends Modal {
+    private title: string;
+    private message: string;
+    private resolve: (value: boolean) => void;
+
+    constructor(app: App, title: string, message: string, resolve: (value: boolean) => void) {
+        super(app);
+        this.title = title;
+        this.message = message;
+        this.resolve = resolve;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        
+        contentEl.createEl('h2', { text: this.title });
+        contentEl.createEl('p', { text: this.message });
+        
+        const buttonContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
+        
+        const cancelButton = buttonContainer.createEl('button', { text: 'Cancel' });
+        cancelButton.addEventListener('click', () => {
+            this.resolve(false);
+            this.close();
+        });
+        
+        const confirmButton = buttonContainer.createEl('button', { text: 'Reset', cls: 'mod-warning' });
+        confirmButton.addEventListener('click', () => {
+            this.resolve(true);
+            this.close();
+        });
+    }
+
+    onClose() {
+        const { contentEl } = this;
+        contentEl.empty();
+    }
+}
+
+import { Modal } from 'obsidian';
 
 class TimecountSettingTab extends PluginSettingTab {
     plugin: TimecountPlugin;
@@ -368,6 +476,12 @@ class TimecountSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        // Add statistics section
+        containerEl.createEl('h3', { text: 'Statistics' });
+        
+        const statsContainer = containerEl.createDiv();
+        this.updateStatsDisplay(statsContainer);
+
         // Add export button
         new Setting(containerEl)
             .setName('Export data')
@@ -381,7 +495,7 @@ class TimecountSettingTab extends PluginSettingTab {
                         const url = URL.createObjectURL(blob);
                         const a = document.createElement('a');
                         a.href = url;
-                        a.download = 'timecount-data.json';
+                        a.download = `timecount-data-${new Date().toISOString().split('T')[0]}.json`;
                         a.click();
                         URL.revokeObjectURL(url);
                         new Notice('Timecount data exported successfully');
@@ -390,5 +504,31 @@ class TimecountSettingTab extends PluginSettingTab {
                         console.error(error);
                     }
                 }));
+
+        // Add reset button
+        new Setting(containerEl)
+            .setName('Reset all data')
+            .setDesc('⚠️ Permanently delete all time tracking data')
+            .addButton(button => button
+                .setButtonText('Reset')
+                .setWarning()
+                .onClick(async () => {
+                    await this.plugin.resetTimeData();
+                    this.updateStatsDisplay(statsContainer);
+                }));
+    }
+
+    private updateStatsDisplay(container: HTMLElement): void {
+        container.empty();
+        
+        const allTimeTotal = this.plugin.calculateAllTimeTotal();
+        const todayTotal = this.plugin.calculateTodayTotal();
+        
+        const allTimeFormatted = this.plugin.formatTime(allTimeTotal);
+        const todayFormatted = this.plugin.formatTime(todayTotal);
+        
+        container.createEl('p', { text: `All time: ${allTimeFormatted}` });
+        container.createEl('p', { text: `Today: ${todayFormatted}` });
+        container.createEl('p', { text: `Total days tracked: ${this.plugin.timeData.length}` });
     }
 }

@@ -1,8 +1,65 @@
-/*
+/* Timecount Plugin Styles */
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.modal-button-container {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 20px;
+}
 
-If your plugin does not need CSS, delete this file.
+.modal-button-container button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.2s ease;
+}
 
-*/
+.modal-button-container button:hover {
+    opacity: 0.8;
+}
+
+.modal-button-container .mod-warning {
+    background-color: var(--color-red);
+    color: white;
+}
+
+.modal-button-container .mod-warning:hover {
+    background-color: var(--color-red-hover);
+}
+
+/* Status bar styling */
+.status-bar-item {
+    font-family: var(--font-monospace);
+    font-size: 12px;
+}
+
+/* Settings page improvements */
+.setting-item-description {
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.timecount-stats {
+    background: var(--background-secondary);
+    border-radius: 6px;
+    padding: 12px;
+    margin: 10px 0;
+    font-family: var(--font-monospace);
+    font-size: 14px;
+}
+
+.timecount-stats p {
+    margin: 4px 0;
+}
+
+/* Button styling improvements */
+.setting-item button.mod-warning {
+    background-color: var(--color-red);
+    color: white;
+}
+
+.setting-item button.mod-warning:hover {
+    background-color: var(--color-red-hover);
+}
